@@ -20,6 +20,7 @@
 #include <sstream>
 #include <fstream>
 #include <map>
+#include <syslog.h>
 
 #include <sys/types.h>
 #include <stdio.h>
@@ -678,8 +679,8 @@ class ASPFConnector
 		std::string encrypted;
 		if(!Encrypt(key, iv, data, encrypted))
 		{
-			smfi_setreply(ctx,(char*)"451",NULL,(char*)"ASPF: Encryption Failed");
-			return SMFIS_TEMPFAIL;
+			syslog(LOG_ALERT, "[BYPASS] Internal Error: AES-Encrypt Failed, Memory Issues?!");			
+			return SMFIS_CONTINUE;
 		}
 		header = UUID + std::string("#") + ts + std::string("#") + tostr(data.size()) + "\n";
 
@@ -694,6 +695,7 @@ class ASPFConnector
 
 		if (error)
 		{
+			syslog(LOG_ALERT, "[BYPASS] Host Lookup Failure!");			
 			//smfi_setreply(ctx,(char*)"451",NULL,(char*)std::string(std::string("ASPF: Socket Error #") + tostr(__LINE__)).c_str());
 			return SMFIS_CONTINUE;
 		}
@@ -736,7 +738,7 @@ class ASPFConnector
 
 		if(!success)
 		{
-			//smfi_setreply(ctx,(char*)"451",NULL,(char*)std::string(std::string("ASPF: Socket Error #") + tostr(__LINE__)).c_str());
+			syslog(LOG_CRIT, "[BYPASS] Service Down");			
 			return SMFIS_CONTINUE;
 		}
 
@@ -834,7 +836,11 @@ sfsistat mlfi_envrcpt(SMFICTX* ctx, char** envrcpt)
 sfsistat mlfi_cleanup(SMFICTX *ctx, bool ok)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
-	delete ASPF;
+	if(ASPF)
+	{
+		delete ASPF;
+		smfi_setpriv(ctx, NULL);
+	}
 
 	return SMFIS_CONTINUE;
 }
@@ -864,9 +870,9 @@ sfsistat mlfi_eom(SMFICTX *ctx)
 	return mlfi_cleanup(ctx, true);
 }
 
-sfsistat
-mlfi_close(SMFICTX *ctx)
+sfsistat mlfi_close(SMFICTX *ctx)
 {
+	mlfi_cleanup(ctx, true);
 	return SMFIS_ACCEPT;
 }
 
@@ -924,7 +930,7 @@ struct smfiDesc smfilter =
 int
 main(int argc, char *argv[])
 {
-    if(argc < 3)
+    if(argc < 4)
     {
         std::cerr << "Usage: " << argv[0] << " [BIND_PARAMETERS] [MASTER_SERVER] [API_KEY] {PID_FILE}" << std::endl;        
         std::cerr << "Example (StandAlone): " << argv[0] << " inet:9999 aspf.npulse.net 93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C" << std::endl;        
@@ -932,17 +938,21 @@ main(int argc, char *argv[])
         exit(EX_UNAVAILABLE);
     }
 
+	openlog("ASPF/MilterProxy", LOG_NOWAIT | LOG_PID, LOG_MAIL);
+
 	std::cerr << "ASPF | Initialising Proxy Module ..." << std::endl;
 
     server = argv[2];
     api_key = argv[3];
 
-	if(server.size() != 64)
+	if(api_key.size() != 64)
 	{
 		std::cerr << "ASPF | Error: API Key size invalid" << std::endl;
+		syslog(LOG_ALERT, "API Key size invalid");
+		exit(EX_UNAVAILABLE);
 	}
 	
-	if(argc >= 4)
+	if(argc >= 5)
 	{
 		pid_file = argv[4];
 	}
@@ -951,6 +961,7 @@ main(int argc, char *argv[])
 	if (smfi_register(smfilter) == MI_FAILURE)
 	{
         std::cerr << "Initialisation Failed" << std::endl;        
+		syslog(LOG_ALERT, "Initialisation Failed");
 		exit(EX_UNAVAILABLE);
 	}
 
@@ -958,22 +969,23 @@ main(int argc, char *argv[])
 	if(!PWD)
 	{
 		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
+		syslog(LOG_ALERT, "Unable to setuid to nobody");
         exit(EX_UNAVAILABLE);
 	}
 
 	if(setuid(PWD->pw_uid) != 0)
 	{
 		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
+		syslog(LOG_ALERT, "Error: Unable to setuid to nobody");
         exit(EX_UNAVAILABLE);
 	}
 
 	if(pid_file.size())
 	{
-    	pid_t pid, sid = fork();
+    	pid_t pid = fork(), sid;
 
 		if (pid == 0)
 		{
-
 			sid = setsid();
 
 			if(sid < 0)
@@ -988,16 +1000,24 @@ main(int argc, char *argv[])
 		else if (pid > 0)
 		{
 			std::cerr << "ASPF | Started as Daemon" << std::endl;
+			syslog(LOG_NOTICE, "Started as Daemon");
 			writeFile(pid_file,tostr(pid));
 			exit(0);
 		}
 		else
 		{
 			std::cerr << "ASPF | Error: Fork Failed" << std::endl;
+			syslog(LOG_NOTICE, "Fork Failed");
 			exit(EX_UNAVAILABLE);
 		}		
 	}
+	else
+	{
+		std::cerr << "ASPF | Started as Stand-Alone" << std::endl;
+		syslog(LOG_NOTICE, "Started as Stand-Alone");
+	}
 
-
-	return smfi_main();
+	smfi_main();
+	syslog(LOG_NOTICE, "Service Stopped");
+	return 0;
 }
