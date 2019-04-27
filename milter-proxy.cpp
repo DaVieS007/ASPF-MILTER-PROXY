@@ -1,7 +1,7 @@
 /**
  * Name: ASPF-MILTER Proxy Module
  * Description: 
- * This module is act as milter and all requests proxied securely into ASPF UPStream server.
+ * This module is act as milter and all requests proxied securely into ASPF UPStream server. 
  * It uses AES128-CBC Encryption Mechanism.
  * Data proxied: Mail headers, Sender, Recipient, IP Address, Mail Server FQDN
  * Mail body will not send
@@ -18,6 +18,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <map>
 
 #include <sys/types.h>
@@ -41,6 +42,10 @@
 #include <openssl/err.h>
 #include <openssl/md5.h>
 
+#include <sys/types.h>
+#include <pwd.h>
+#include <unistd.h>
+
 #define _ASPF_ "ASPF"
 #define NEXUS_BUFFER 4194304
 #define PORT "7777"
@@ -48,6 +53,8 @@
 std::string server;
 std::string api_key;
 std::mutex gmutex;
+
+std::string pid_file;
 
 struct mlfiPriv
 {
@@ -59,6 +66,35 @@ struct mlfiPriv
 
 static unsigned long mta_caps = 0;
 
+/** GLOBAL UTILS **/
+/** TOSTR **/
+template <class T>
+std::string tostr (T val)
+{
+	std::stringstream out;
+	out << val;
+	return out.str();
+}
+/** TOSTR **/
+
+/** writeFile **/
+bool writeFile(std::string file, std::string data)
+{
+    std::ofstream fs;
+    fs.open(file.c_str(),std::ios::binary);
+    if(fs.is_open())
+    {
+        fs.write(data.c_str(),data.size());
+        fs.close();
+        return true;
+    }
+
+    return false;
+}
+/** writeFile **/
+/** GLOBAL UTILS **/
+
+/** ASPFCONNECTOR **/
 class ASPFConnector
 {
 	public: 
@@ -105,16 +141,6 @@ class ASPFConnector
 		return ret;
 	}
 	/** HANDLE **/
-
-    /** TOSTR **/
-    template <class T>
-    std::string tostr (T val)
-    {
-        std::stringstream out;
-        out << val;
-        return out.str();
-    }
-    /** TOSTR **/
 
     /** BIN_VALUE **/
     int bin_value(char ch)
@@ -725,7 +751,9 @@ class ASPFConnector
 	std::string from, to, header;
 	std::string ASPF_SERVER, ASPF_KEY;
 };
+/** ASPFCONNECTOR **/
 
+/** MILTER_UTILS **/
 std::string symval(SMFICTX * ctx, std::string key)
 {
 	std::string ret = "";
@@ -891,6 +919,7 @@ struct smfiDesc smfilter =
 	mlfi_data,	/* DATA command filter */
 	mlfi_negotiate	/* option negotiation at connection startup */
 };
+/** MILTER_UTILS **/
 
 int
 main(int argc, char *argv[])
@@ -913,11 +942,62 @@ main(int argc, char *argv[])
 		std::cerr << "ASPF | Error: API Key size invalid" << std::endl;
 	}
 	
+	if(argc >= 4)
+	{
+		pid_file = argv[4];
+	}
+
 	(void) smfi_setconn(argv[1]);
 	if (smfi_register(smfilter) == MI_FAILURE)
 	{
         std::cerr << "Initialisation Failed" << std::endl;        
 		exit(EX_UNAVAILABLE);
 	}
+
+	struct passwd *PWD = getpwnam("nobody");
+	if(!PWD)
+	{
+		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
+        exit(EX_UNAVAILABLE);
+	}
+
+	if(setuid(PWD->pw_uid) != 0)
+	{
+		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
+        exit(EX_UNAVAILABLE);
+	}
+
+	if(pid_file.size())
+	{
+    	pid_t pid, sid = fork();
+
+		if (pid == 0)
+		{
+
+			sid = setsid();
+
+			if(sid < 0)
+			{
+				exit(EX_UNAVAILABLE);
+			}
+
+			close(STDIN_FILENO);
+			close(STDOUT_FILENO);
+			close(STDERR_FILENO);			
+		}
+		else if (pid > 0)
+		{
+			std::cerr << "ASPF | Started as Daemon" << std::endl;
+			writeFile(pid_file,tostr(pid));
+			exit(0);
+		}
+		else
+		{
+			std::cerr << "ASPF | Error: Fork Failed" << std::endl;
+			exit(EX_UNAVAILABLE);
+		}		
+	}
+
+
 	return smfi_main();
 }
