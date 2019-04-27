@@ -1,3 +1,21 @@
+/**
+ * Name: ASPF-MILTER Proxy Module
+ * Description: 
+ * This module is act as milter and all requests proxied securely into ASPF UPStream server.
+ * It uses AES128-CBC Encryption Mechanism.
+ * Data proxied: Mail headers, Sender, Recipient, IP Address, Mail Server FQDN
+ * Mail body will not send
+ * 
+ * Requirements: libmilter, libopenssl, libpthread
+ * 
+ * Compiling on BSD: clang++ -o milter milter-proxy.cpp -lmilter -lpthread -lcrypto
+ * Compiling on Linux: g++ -o milter milter-proxy.cpp -lmilter -lpthread -lcrypto
+ * 
+ * Author: DaVieS / davies@npulse.net | Viktor Hlavaji
+ * License: BSD
+ * 
+ **/
+
 #include <iostream>
 #include <sstream>
 #include <map>
@@ -669,7 +687,7 @@ class ASPFConnector
 						if(socket_write(sock,encrypted) > 0)
 						{
 
-							
+
 
 
 							success = true;
@@ -877,19 +895,25 @@ struct smfiDesc smfilter =
 int
 main(int argc, char *argv[])
 {
-
     if(argc < 3)
     {
-        std::cerr << "Usage: " << argv[0] << " [BIND_PARAMETERS] [MASTER_SERVER] [API_KEY]" << std::endl;        
-        std::cerr << "Example: " << argv[0] << " inet:127.0.0.1:9999 aspf.npulse.net 50D858E0985ECC7F60418AAF0CC5AB587F42C2570A884095A9E8CCACD0F6545C" << std::endl;        
+        std::cerr << "Usage: " << argv[0] << " [BIND_PARAMETERS] [MASTER_SERVER] [API_KEY] {PID_FILE}" << std::endl;        
+        std::cerr << "Example (StandAlone): " << argv[0] << " inet:9999 aspf.npulse.net 93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C" << std::endl;        
+        std::cerr << "Example (Daemon): " << argv[0] << " inet:9999 aspf.npulse.net 93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C /var/run/aspf.pid" << std::endl;        
         exit(EX_UNAVAILABLE);
     }
 
-    (void) smfi_setconn(argv[1]);
+	std::cerr << "ASPF | Initialising Proxy Module ..." << std::endl;
 
     server = argv[2];
     api_key = argv[3];
 
+	if(server.size() != 64)
+	{
+		std::cerr << "ASPF | Error: API Key size invalid" << std::endl;
+	}
+	
+	(void) smfi_setconn(argv[1]);
 	if (smfi_register(smfilter) == MI_FAILURE)
 	{
         std::cerr << "Initialisation Failed" << std::endl;        
