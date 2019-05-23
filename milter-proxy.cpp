@@ -49,10 +49,13 @@
 
 #define _ASPF_ "ASPF"
 #define NEXUS_BUFFER 4194304
-#define PORT "7777"
 
 std::string server;
 std::string api_key;
+std::string port;
+std::mutex logmutex;
+bool standalone;
+
 std::mutex gmutex;
 
 std::string pid_file;
@@ -64,6 +67,7 @@ struct mlfiPriv
 };
 
 #define MLFIPRIV	((struct mlfiPriv *) smfi_getpriv(ctx))
+#define COMERROR SMFIS_CONTINUE
 
 static unsigned long mta_caps = 0;
 
@@ -77,6 +81,53 @@ std::string tostr (T val)
 	return out.str();
 }
 /** TOSTR **/
+
+void log(int type, std::string msg)
+{
+	std::string tp;
+
+	if(type == LOG_EMERG)
+	{
+		tp = "[EMERG]";
+	}
+	else if(type == LOG_CRIT)
+	{
+		tp = "[CRITICAL]";
+	}
+	else if(type == LOG_ERR)
+	{
+		tp = "[ERROR]";
+	}
+	else if(type == LOG_WARNING)
+	{
+		tp = "[WARNING]";
+	}
+	else if(type == LOG_NOTICE)
+	{
+		tp = "[NOTICE]";
+	}
+	else if(type == LOG_INFO)
+	{
+		tp = "[INFO]";
+	}
+	else if(type == LOG_DEBUG)
+	{
+		tp = "[DEBUG]";
+	}
+	else if(type == LOG_ALERT)
+	{
+		tp = "[ALERT]";
+	}
+
+
+	logmutex.lock();
+	syslog(type, "%s", msg.c_str());
+	if(standalone)
+	{
+		std::cerr << tp << " | ASPF | " << msg << std::endl;
+	}
+	logmutex.unlock();
+}
 
 /** writeFile **/
 bool writeFile(std::string file, std::string data)
@@ -93,6 +144,55 @@ bool writeFile(std::string file, std::string data)
     return false;
 }
 /** writeFile **/
+
+/** EXPLODE **/
+std::map<int,std::string> explode (std::string exploder,std::string original, unsigned int occ)
+{
+	std::map<int,std::string> result;
+	std::string tmp;
+	tmp = original;
+	int num;
+	size_t loc;
+
+	if(!exploder.size() || !original.size())
+	{
+		return result;
+	}
+
+	num=0;
+	while (true)
+	{
+		loc = tmp.find(exploder);
+		if(loc == std::string::npos)
+		{
+			break;
+		}
+
+		if(occ > 0 && (num + 1) >= occ)
+		{
+			break;
+		}
+
+		if(loc != 0)
+		{
+			result[num] = tmp.substr(0,loc);
+		}
+		else
+		{
+			result[num] = "";
+		}
+		
+		num++;
+		tmp = tmp.substr(loc + exploder.size());
+	}
+
+	//num++;
+	result[num] += tmp;
+
+	return result;
+}
+/** EXPLODE **/
+
 /** GLOBAL UTILS **/
 
 /** ASPFCONNECTOR **/
@@ -274,54 +374,6 @@ class ASPFConnector
 	}
 	/** MD5 **/
 
-    /** EXPLODE **/
-    std::map<int,std::string> explode (std::string exploder,std::string original, unsigned int occ)
-    {
-        std::map<int,std::string> result;
-        std::string tmp;
-        tmp = original;
-        int num;
-        size_t loc;
-
-        if(!exploder.size() || !original.size())
-        {
-            return result;
-        }
-
-        num=0;
-        while (true)
-        {
-            loc = tmp.find(exploder);
-            if(loc == std::string::npos)
-            {
-                break;
-            }
-
-            if(occ > 0 && (num + 1) >= occ)
-            {
-                break;
-            }
-
-            if(loc != 0)
-            {
-                result[num] = tmp.substr(0,loc);
-            }
-            else
-            {
-                result[num] = "";
-            }
-            
-            num++;
-            tmp = tmp.substr(loc + exploder.size());
-        }
-
-        //num++;
-        result[num] += tmp;
-
-        return result;
-    }
-    /** EXPLODE **/
-
 	/** SHA256 **/
 	std::string sha256(std::string data, bool raw)
 	{
@@ -467,11 +519,12 @@ class ASPFConnector
 		}
 
 		unsigned char *ciphertext = new unsigned char[input.size() + 64];
-		auto len = aes_encrypt((unsigned char*)input.c_str(), input.size(), (unsigned char*)key_.c_str(), (unsigned char*)iv_.c_str(), ciphertext, true);
+		int len = aes_encrypt((unsigned char*)input.c_str(), input.size(), (unsigned char*)key_.c_str(), (unsigned char*)iv_.c_str(), ciphertext, true);
 		if(len > 0)
 		{
 			output = "";
 			output.append((char*)ciphertext, len);
+			output = bin2hex(output);
 			delete[] ciphertext;
 			return true;
 		}
@@ -491,8 +544,10 @@ class ASPFConnector
 			return false;
 		}
 
-		unsigned char *plaintext = new unsigned char[input.size() + 64];
-		auto len = aes_decrypt((unsigned char*)input.c_str(), input.size(), (unsigned char*)key_.c_str(), (unsigned char*)iv_.c_str(), plaintext, true);
+		std::string t_input = hex2bin(input);
+
+		unsigned char *plaintext = new unsigned char[t_input.size() + 64];
+		int len = aes_decrypt((unsigned char*)t_input.c_str(), t_input.size(), (unsigned char*)key_.c_str(), (unsigned char*)iv_.c_str(), plaintext, true);
 
 		if(len > 0)
 		{
@@ -604,8 +659,6 @@ class ASPFConnector
 			ret += it->first + "\x02" + it->second;
 		}
 
-		ret = std::string("<ASPF>") + ret + std::string("</ASPF>");
-
 		return ret;
 	}
 	/** SERIALIZE **/
@@ -661,14 +714,18 @@ class ASPFConnector
 	/** SOCKET_WRITE **/
 
 	/** COMMUNICATE **/
-	int Communicate(std::string &data)
+	int Communicate(std::string data)
 	{
+		com_error = "";
+		retval = "";
+		rdata.clear();
+
 		std::string header;
 		std::map<int,std::string> ex;
 		if(ASPF_KEY.size() != 64)
 		{
 			//smfi_setreply(ctx,(char*)"451",NULL,(char*)"ASPF: Invalid API_KEY");
-			return SMFIS_CONTINUE;
+			return COMERROR;
 		}
 
 		std::string UUID = ASPF_KEY.substr(0,8);
@@ -679,10 +736,10 @@ class ASPFConnector
 		std::string encrypted;
 		if(!Encrypt(key, iv, data, encrypted))
 		{
-			syslog(LOG_ALERT, "[BYPASS] Internal Error: AES-Encrypt Failed, Memory Issues?!");			
-			return SMFIS_CONTINUE;
+			com_error = "Internal Error: AES-Encrypt Failed, Memory Issues?!";
+			return COMERROR;
 		}
-		header = UUID + std::string("#") + ts + std::string("#") + tostr(data.size()) + "\n";
+		header = UUID + std::string("#") + ts + std::string("#") + encrypted + "\n";
 
 		/** NETWORK_STACK **/
 		int error;
@@ -691,13 +748,13 @@ class ASPFConnector
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
-		error = getaddrinfo(ASPF_SERVER.c_str(), PORT, &hints, &res0);
+		error = getaddrinfo(ASPF_SERVER.c_str(), port.c_str(), &hints, &res0);
 
 		if (error)
 		{
-			syslog(LOG_ALERT, "[BYPASS] Host Lookup Failure!");			
+			com_error = "Internal Error: Host Lookup Failure!";
 			//smfi_setreply(ctx,(char*)"451",NULL,(char*)std::string(std::string("ASPF: Socket Error #") + tostr(__LINE__)).c_str());
-			return SMFIS_CONTINUE;
+			return COMERROR;
 		}
 
 		res = res0;
@@ -712,14 +769,79 @@ class ASPFConnector
 				{				
 					if(socket_write(sock,header) > 0)
 					{
-						if(socket_write(sock,encrypted) > 0)
+						/** READ_DATA **/
+						int ret;
+						std::string response;
+						char buffer[4096];
+						buffer[0] = 0x00;
+
+						while(true)
 						{
+							ret = recv(sock, buffer, 4096, 0);
+							if(ret <= 0)
+							{
+								break;
+							}
 
+							response.append(buffer,ret);									
 
+							if(response.find("\n") != std::string::npos)
+							{
 
-
-							success = true;
+								break;
+							}
+							buffer[0] = 0x00;
 						}
+						/** READ_DATA **/
+
+						if(response.find("\n") == std::string::npos)
+						{
+							
+						}
+						else
+						{
+							if(response.at(0) == 'E' && response.size() > 2)
+							{
+								retval = response.substr(1,response.size() -2);
+								rdata["error"] = retval;
+							}
+							else if(response.find("#") != std::string::npos)
+							{
+								std::map<int,std::string> ex = explode("#",response.substr(0,response.size() - 1),2);
+								std::string rts = ex[0];
+								std::string tdata = ex[1];
+
+								if(rts.size() == 8 && tdata.size())
+								{
+									std::string t_iv = md5(rts,true);
+									std::string dbuff;
+									if(!Decrypt(key, t_iv, tdata, dbuff))
+									{
+										com_error = "Internal Error: AES-Decrypt Failed, Memory Issues?!";
+									}
+									else
+									{
+										retval = dbuff;
+
+										if(retval.find("\x01") != std::string::npos)
+										{
+											std::map<int,std::string> ex2;
+											ex = explode("\x01",retval,0);
+											for (std::map<int,std::string>::iterator it=ex.begin(); it!=ex.end(); ++it)
+											{
+												if(it->second.find("\x02") != std::string::npos)
+												{
+													ex2 = explode("\x02",it->second,2);
+													rdata[ex2[0]] = ex2[1];
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+
+						success = true;
 					}
 				}
 				close(sock);
@@ -738,14 +860,17 @@ class ASPFConnector
 
 		if(!success)
 		{
-			syslog(LOG_CRIT, "[BYPASS] Service Down");			
-			return SMFIS_CONTINUE;
+			com_error = "Internal Error: Unable to connect!";
+			return COMERROR;
 		}
 
-		return SMFIS_CONTINUE;
+		return COMERROR;
 	}
 	/** COMMUNICATE **/
 
+	std::string retval;
+	std::string com_error;
+	std::map<std::string,std::string> rdata;
 
 	private:
 	SMFICTX *ctx;
@@ -810,27 +935,48 @@ sfsistat mlfi_helo(SMFICTX * ctx, char * helohost)
 sfsistat mlfi_envfrom(SMFICTX *ctx, char **envfrom)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
-	ASPF->Set("FROM",envfrom[0]);
-	ASPF->Set("QID",symval(ctx,"i"));
-	ASPF->Set("AUTH",symval(ctx,"{auth_authen}"));
-	ASPF->Set("ATYPE",symval(ctx,"{auth_type}"));
-	ASPF->From(envfrom[0]);
+	if(ASPF)
+	{
+		if(envfrom[0] != NULL)
+		{
+			ASPF->From(envfrom[0]);
+		}
 
-/* Useless at the moment
-	ASPF->Set("TLSV",symval(ctx,"tls_version"));
-	ASPF->Set("C_SUBJECT",symval(ctx,"cert_subject"));
-	ASPF->Set("C_ISSUER",symval(ctx,"cert_issuer"));
-*/
+		ASPF->Set("QID",symval(ctx,"i"));
+		ASPF->Set("AUTH",symval(ctx,"{auth_authen}"));
+		ASPF->Set("ATYPE",symval(ctx,"{auth_type}"));
 
-	return ASPF->Handle("mlfi_envfrom");	
+		/* Useless at the moment
+			ASPF->Set("TLSV",symval(ctx,"tls_version"));
+			ASPF->Set("C_SUBJECT",symval(ctx,"cert_subject"));
+			ASPF->Set("C_ISSUER",symval(ctx,"cert_issuer"));
+		*/
+
+		return ASPF->Handle("mlfi_envfrom");	
+	}
+	else
+	{
+		return SMFIS_TEMPFAIL;
+	}
 }
 
 sfsistat mlfi_envrcpt(SMFICTX* ctx, char** envrcpt)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
-	ASPF->To(envrcpt[0]);
+	if(ASPF)
+	{
 
-	return ASPF->Handle("mlfi_envrcpt");	
+		if(envrcpt[0] != NULL)
+		{
+			ASPF->To(envrcpt[0]);
+		}
+
+		return ASPF->Handle("mlfi_envrcpt");	
+	}
+	else
+	{
+		return SMFIS_TEMPFAIL;
+	}
 }
 
 sfsistat mlfi_cleanup(SMFICTX *ctx, bool ok)
@@ -856,6 +1002,10 @@ sfsistat mlfi_header(SMFICTX *ctx, char *headerf, char *headerv)
 sfsistat mlfi_eoh(SMFICTX *ctx)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
+	ASPF->Set("ID",symval(ctx,"i"));
+	ASPF->Set("DAEMON_ADDR",symval(ctx,"{daemon_addr}"));
+	ASPF->Set("CLIENT_ADDR",symval(ctx,"{client_addr}"));
+	ASPF->Set("IF_ADDR",symval(ctx,"{if_addr}"));
 
 	return ASPF->Handle("mlfi_eoh");	
 }
@@ -930,25 +1080,31 @@ struct smfiDesc smfilter =
 int
 main(int argc, char *argv[])
 {
-    if(argc < 4)
+	standalone = true;
+    if(argc < 3)
     {
-        std::cerr << "Usage: " << argv[0] << " [BIND_PARAMETERS] [MASTER_SERVER] [API_KEY] {PID_FILE}" << std::endl;        
-        std::cerr << "Example (StandAlone): " << argv[0] << " inet:9999 aspf.npulse.net 93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C" << std::endl;        
-        std::cerr << "Example (Daemon): " << argv[0] << " inet:9999 aspf.npulse.net 93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C /var/run/aspf.pid" << std::endl;        
+        std::cerr << "Usage: " << argv[0] << " [BIND_PARAMETERS] [MASTER_SERVER:PORT/API_KEY] {PID_FILE}" << std::endl;        
+        std::cerr << "Example (StandAlone): " << argv[0] << " inet:9999 aspf.npulse.net:7777/93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C" << std::endl;        
+        std::cerr << "Example (Daemon): " << argv[0] << " inet:9999 aspf.npulse.net:7777/93D8874C8C86F0FC893DBE15C765FFA0FCD342F798DBF669E08F8CBE095D230C /var/run/aspf.pid" << std::endl;        
         exit(EX_UNAVAILABLE);
     }
 
-	openlog("ASPF/MilterProxy", LOG_NOWAIT | LOG_PID, LOG_MAIL);
+	openlog("ASPF/Proxy", LOG_NOWAIT | LOG_PID, LOG_MAIL);
 
-	std::cerr << "ASPF | Initialising Proxy Module ..." << std::endl;
+	log(LOG_NOTICE, "Initialising Proxy Module ...");
 
-    server = argv[2];
-    api_key = argv[3];
+	std::map<int,std::string> ex = explode("/",argv[2],2);
+    server = ex[0];
+	api_key = ex[1];
+
+	ex = explode(":",server,2);
+	
+	port = ex[1];
+	server = ex[0];
 
 	if(api_key.size() != 64)
 	{
-		std::cerr << "ASPF | Error: API Key size invalid" << std::endl;
-		syslog(LOG_ALERT, "API Key size invalid");
+		log(LOG_ALERT, "API Key size invalid");
 		exit(EX_UNAVAILABLE);
 	}
 	
@@ -960,28 +1116,50 @@ main(int argc, char *argv[])
 	(void) smfi_setconn(argv[1]);
 	if (smfi_register(smfilter) == MI_FAILURE)
 	{
-        std::cerr << "Initialisation Failed" << std::endl;        
-		syslog(LOG_ALERT, "Initialisation Failed");
+		log(LOG_ALERT, "Initialisation Failed");
 		exit(EX_UNAVAILABLE);
 	}
 
 	struct passwd *PWD = getpwnam("nobody");
 	if(!PWD)
 	{
-		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
-		syslog(LOG_ALERT, "Unable to setuid to nobody");
+		log(LOG_ALERT, "Unable to setuid to nobody");
         exit(EX_UNAVAILABLE);
 	}
 
 	if(setuid(PWD->pw_uid) != 0)
 	{
-		std::cerr << "ASPF | Error: Unable to setuid to nobody" << std::endl;
-		syslog(LOG_ALERT, "Error: Unable to setuid to nobody");
+		log(LOG_ALERT, "Error: Unable to setuid to nobody");
         exit(EX_UNAVAILABLE);
+	}
+
+
+	ASPFConnector ASPF(NULL);
+	log(LOG_NOTICE, "Initiating Connection Test");
+	ASPF.Set("FUNC","CONTEST");
+	ASPF.Set("PING","ASPF");
+	ASPF.Communicate(ASPF.Serialize());
+
+	if(ASPF.com_error.size() > 0)
+	{
+		log(LOG_WARNING, std::string("Connection Test Failed: ") + ASPF.com_error);
+	}
+	else if(ASPF.rdata["error"].size() > 0)
+	{
+		log(LOG_WARNING, std::string("Connection Test Failed: ") + ASPF.rdata["error"]);
+	}
+	else if(ASPF.rdata["PONG"] == "ASPF")
+	{
+		log(LOG_NOTICE, std::string("Connection Test Success"));
+	}
+	else
+	{
+		log(LOG_NOTICE, std::string("Connection Test Failed due unknown error"));
 	}
 
 	if(pid_file.size())
 	{
+		standalone = false;
     	pid_t pid = fork(), sid;
 
 		if (pid == 0)
@@ -999,25 +1177,22 @@ main(int argc, char *argv[])
 		}
 		else if (pid > 0)
 		{
-			std::cerr << "ASPF | Started as Daemon" << std::endl;
-			syslog(LOG_NOTICE, "Started as Daemon");
+			log(LOG_NOTICE, "Started as Daemon");
 			writeFile(pid_file,tostr(pid));
 			exit(0);
 		}
 		else
 		{
-			std::cerr << "ASPF | Error: Fork Failed" << std::endl;
-			syslog(LOG_NOTICE, "Fork Failed");
+			log(LOG_NOTICE, "Fork Failed");
 			exit(EX_UNAVAILABLE);
 		}		
 	}
 	else
 	{
-		std::cerr << "ASPF | Started as Stand-Alone" << std::endl;
-		syslog(LOG_NOTICE, "Started as Stand-Alone");
+		log(LOG_NOTICE, "Started as Stand-Alone");
 	}
 
 	smfi_main();
-	syslog(LOG_NOTICE, "Service Stopped");
+	log(LOG_NOTICE, "Service Stopped");
 	return 0;
 }
