@@ -225,18 +225,41 @@ class ASPFConnector
 		int ret = SMFIS_CONTINUE;
 		Set("FUNC",func);
 
-		if(func == "mlfi_envrcpt")
-		{ // FIRST ENTRYPOINT TO COMMUNICATE
-			std::string data = Serialize();
-			ret = Communicate(data);
-		}
-		else if(func == "mlfi_eoh")
-		{ // SECOND ENTRYPOINT TO COMMUNICATE
+		if(func == "mlfi_eom")
+		{
+			Set("SMTP","postfix.milter");
 			std::string data = Serialize();
 			ret = Communicate(data);
 
-//			smfi_setmlreply(ctx, "550", "5.7.0", "Spammer access rejected", "Please see our policy at:", "http://www.example.com/spampolicy.html", NULL);
-//			return SMFIS_REJECT;
+			if(rdata["ACTION"] == "REJECT")
+			{
+				smfi_setreply(ctx, (char*)rdata["CODE"].c_str(), (char*)rdata["ECODE"].c_str(), (char*)rdata["MESSAGE"].c_str());
+				return SMFIS_REJECT;
+			}
+			else
+			{
+				return SMFIS_CONTINUE;
+			}
+
+			if(rdata["ADDHDR"].size() > 0)
+			{
+				if(rdata["ADDHDR"].find("\n") != std::string::npos)
+				{
+					std::map<int,std::string> ex = explode("\n",rdata["ADDHDR"],0);
+					for (std::map<int,std::string>::iterator it=ex.begin(); it!=ex.end(); ++it)
+					{
+						if(it->second.find(": ") != std::string::npos)
+						{
+							std::map<int,std::string> ex2 = explode(": ",it->second,0);
+							smfi_addheader(ctx, (char*)ex2[0].c_str(), (char*)ex2[1].c_str());			
+						}
+					}
+				}
+			}
+
+/*
+			smfi_setmlreply(ctx, "550", "5.7.0", "Spammer access rejected", "Please see our policy at:", "http://www.example.com/spampolicy.html", NULL);
+*/
 		}
 
 		return ret;
@@ -1002,12 +1025,16 @@ sfsistat mlfi_header(SMFICTX *ctx, char *headerf, char *headerv)
 sfsistat mlfi_eoh(SMFICTX *ctx)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
-	ASPF->Set("ID",symval(ctx,"i"));
-	ASPF->Set("DAEMON_ADDR",symval(ctx,"{daemon_addr}"));
-	ASPF->Set("CLIENT_ADDR",symval(ctx,"{client_addr}"));
-	ASPF->Set("IF_ADDR",symval(ctx,"{if_addr}"));
+	if(ASPF)
+	{
+		ASPF->Set("ID",symval(ctx,"i"));
+		ASPF->Set("DAEMON_ADDR",symval(ctx,"{daemon_addr}"));
+		ASPF->Set("CLIENT_ADDR",symval(ctx,"{client_addr}"));
+		ASPF->Set("IF_ADDR",symval(ctx,"{if_addr}"));
+		return ASPF->Handle("mlfi_eoh");	
+	}
 
-	return ASPF->Handle("mlfi_eoh");	
+	return SMFIS_TEMPFAIL;
 }
 
 sfsistat mlfi_body(SMFICTX *ctx, u_char *bodyp, size_t bodylen)
@@ -1017,7 +1044,13 @@ sfsistat mlfi_body(SMFICTX *ctx, u_char *bodyp, size_t bodylen)
 
 sfsistat mlfi_eom(SMFICTX *ctx)
 {
-	return mlfi_cleanup(ctx, true);
+	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
+	if(ASPF)
+	{
+		return ASPF->Handle("mlfi_eom");	
+	}
+
+	return SMFIS_TEMPFAIL;
 }
 
 sfsistat mlfi_close(SMFICTX *ctx)
@@ -1067,7 +1100,7 @@ struct smfiDesc smfilter =
 	mlfi_envrcpt,		/* envelope recipient filter */
 	mlfi_header,	/* header filter */
 	mlfi_eoh,	/* end of header */
-	mlfi_body,	/* body block filter */
+	NULL /*mlfi_body*/,	/* body block filter */
 	mlfi_eom,	/* end of message */
 	mlfi_abort,	/* message aborted */
 	mlfi_close,	/* connection cleanup */
@@ -1077,8 +1110,7 @@ struct smfiDesc smfilter =
 };
 /** MILTER_UTILS **/
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
 	standalone = true;
     if(argc < 3)
@@ -1090,8 +1122,8 @@ main(int argc, char *argv[])
     }
 
 	openlog("ASPF/Proxy", LOG_NOWAIT | LOG_PID, LOG_MAIL);
-
 	log(LOG_NOTICE, "Initialising Proxy Module ...");
+	smfi_setbacklog(40960);
 
 	std::map<int,std::string> ex = explode("/",argv[2],2);
     server = ex[0];
@@ -1108,9 +1140,9 @@ main(int argc, char *argv[])
 		exit(EX_UNAVAILABLE);
 	}
 	
-	if(argc >= 5)
+	if(argc >= 4)
 	{
-		pid_file = argv[4];
+		pid_file = argv[3];
 	}
 
 	(void) smfi_setconn(argv[1]);
