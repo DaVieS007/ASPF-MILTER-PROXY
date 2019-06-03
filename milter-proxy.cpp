@@ -238,25 +238,46 @@ class ASPFConnector
 			}
 			else
 			{
-				return SMFIS_CONTINUE;
-			}
 
-			if(rdata["ADDHDR"].size() > 0)
-			{
-				if(rdata["ADDHDR"].find("\n") != std::string::npos)
+				if(rdata["ADDHDR"].size() > 0)
 				{
-					std::map<int,std::string> ex = explode("\n",rdata["ADDHDR"],0);
-					for (std::map<int,std::string>::iterator it=ex.begin(); it!=ex.end(); ++it)
+					if(rdata["ADDHDR"].find("\n") != std::string::npos)
 					{
-						if(it->second.find(": ") != std::string::npos)
+						std::map<int,std::string> ex = explode(";\n",rdata["ADDHDR"],0);
+						for (std::map<int,std::string>::iterator it=ex.begin(); it!=ex.end(); ++it)
 						{
-							std::map<int,std::string> ex2 = explode(": ",it->second,0);
-							smfi_addheader(ctx, (char*)ex2[0].c_str(), (char*)ex2[1].c_str());			
+							if(it->second.find(": ") != std::string::npos)
+							{
+								std::map<int,std::string> ex2 = explode(": ",it->second,2);
+								if(ex2[0].size() > 0)
+								{
+									for(int i = 0;i<100;i++)
+									{
+										smfi_chgheader(ctx, (char*)ex2[0].c_str(), i, NULL); // DELETE EXISTING
+									}
+								}
+							}
 						}
+
+						for (std::map<int,std::string>::iterator it=ex.begin(); it!=ex.end(); ++it)
+						{
+							if(it->second.find(": ") != std::string::npos)
+							{
+								std::map<int,std::string> ex2 = explode(": ",it->second,2);
+								if(ex2[0].size() > 0)
+								{
+									smfi_addheader(ctx, (char*)ex2[0].c_str(), (char*)ex2[1].c_str());			
+//									smfi_insheader(ctx, 0, (char*)ex2[0].c_str(), (char*)ex2[1].c_str());			
+								}
+							}
+						}
+
 					}
 				}
-			}
 
+
+				return SMFIS_CONTINUE;
+			}
 /*
 			smfi_setmlreply(ctx, "550", "5.7.0", "Spammer access rejected", "Please see our policy at:", "http://www.example.com/spampolicy.html", NULL);
 */
@@ -1077,7 +1098,7 @@ sfsistat mlfi_data(SMFICTX *ctx)
 sfsistat mlfi_negotiate(SMFICTX *ctx, unsigned long f0, unsigned long f1, unsigned long f2, unsigned long f3, unsigned long *pf0, unsigned long *pf1, unsigned long *pf2, unsigned long *pf3)
 {
 	/* milter actions: add headers */
-	*pf0 = SMFIF_ADDHDRS;
+	*pf0 = SMFIF_ADDHDRS | SMFIF_CHGHDRS;
 
 	/* milter protocol steps: all but connect, HELO, RCPT */
 	//*pf1 = SMFIP_NOCONNECT|SMFIP_NOHELO|SMFIP_NORCPT;
@@ -1093,7 +1114,7 @@ struct smfiDesc smfilter =
 {
 	(char*)_ASPF_,	/* filter name */
 	SMFI_VERSION,	/* version code -- do not change */
-	SMFIF_ADDHDRS,	/* flags */
+	SMFIF_ADDHDRS | SMFIF_CHGHDRS,	/* flags */
 	mlfi_connect,		/* connection info filter */
 	mlfi_helo,		/* SMTP HELO command filter */
 	mlfi_envfrom,	/* envelope sender filter */
