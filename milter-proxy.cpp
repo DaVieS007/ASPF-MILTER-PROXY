@@ -225,7 +225,7 @@ class ASPFConnector
 		int ret = SMFIS_CONTINUE;
 		Set("FUNC",func);
 
-		if(func == "mlfi_eom")
+		if(func == "mlfi_eom" || func == "mlfi_envfrom" || func == "mlfi_envrcpt")
 		{
 			Set("SMTP","postfix.milter");
 			std::string data = Serialize();
@@ -236,9 +236,13 @@ class ASPFConnector
 				smfi_setreply(ctx, (char*)rdata["CODE"].c_str(), (char*)rdata["ECODE"].c_str(), (char*)rdata["MESSAGE"].c_str());
 				return SMFIS_REJECT;
 			}
+			else if(rdata["ACTION"] == "DEFER")
+			{
+				smfi_setreply(ctx, (char*)rdata["CODE"].c_str(), (char*)rdata["ECODE"].c_str(), (char*)rdata["MESSAGE"].c_str());
+				return SMFIS_TEMPFAIL;		
+			}
 			else
 			{
-
 				if(rdata["ADDHDR"].size() > 0)
 				{
 					if(rdata["ADDHDR"].find("\n") != std::string::npos)
@@ -945,7 +949,7 @@ sfsistat mlfi_connect(SMFICTX * ctx, char *hostname, _SOCK_ADDR * hostaddr)
 
 	if (!hostaddr)
 	{
-		ASPF->Set("connection_from","");
+		ASPF->Set("IP","");
 	} 
     else
 	{
@@ -971,6 +975,7 @@ sfsistat mlfi_helo(SMFICTX * ctx, char * helohost)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
 	ASPF->Set("HELO",helohost);
+	ASPF->Set("DN",symval(ctx,"{daemon_name}"));
 
 	return ASPF->Handle("mlfi_helo");
 }
