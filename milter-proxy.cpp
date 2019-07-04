@@ -278,6 +278,11 @@ class ASPFConnector
 
 					}
 				}
+				
+				if(rdata["INDEX"].size() > 0)
+				{
+					Set("INDEX",rdata["INDEX"]);
+				}
 
 
 				return SMFIS_CONTINUE;
@@ -635,18 +640,14 @@ class ASPFConnector
 	{
 		if(val.size())
 		{
-			if(from.size())
-			{
-				from += ",";
-			}
-
 			if(val.at(0) == '<')
 			{
 				val = val.substr(1,val.size() - 2);
 			}
 
-			from += val;
+			from = val;
 			Set("FROM", from);
+			Set("TO","");
 		}
 	}
 	/** FROM **/
