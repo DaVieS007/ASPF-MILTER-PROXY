@@ -21,6 +21,7 @@
 #include <fstream>
 #include <map>
 #include <syslog.h>
+#include <mutex>
 
 #include <sys/types.h>
 #include <stdio.h>
