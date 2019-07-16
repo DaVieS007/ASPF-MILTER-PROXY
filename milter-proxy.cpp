@@ -658,6 +658,7 @@ class ASPFConnector
 	{
 		if(val.size())
 		{
+			/*
 			if(to.size())
 			{
 				to += ",";
@@ -669,7 +670,14 @@ class ASPFConnector
 			}
 
 			to += val;
-			Set("TO", to);
+			*/
+
+			if(val.at(0) == '<')
+			{
+				val = val.substr(1,val.size() - 2);
+			}
+
+			Set("TO", val);
 		}
 	}
 	/** TO **/
