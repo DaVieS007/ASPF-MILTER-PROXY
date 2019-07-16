@@ -656,9 +656,14 @@ class ASPFConnector
 	/** TO **/
 	void To(std::string val)
 	{
+		if(Get("RESET") == "OK")
+		{
+			Set("RESET","");
+			to = "";
+		}
+
 		if(val.size())
 		{
-			/*
 			if(to.size())
 			{
 				to += ",";
@@ -670,7 +675,6 @@ class ASPFConnector
 			}
 
 			to += val;
-			*/
 
 			if(val.at(0) == '<')
 			{
@@ -1043,6 +1047,7 @@ sfsistat mlfi_cleanup(SMFICTX *ctx, bool ok)
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
 	if(ASPF)
 	{
+		ASPF->Set("RESET","OK");
 		delete ASPF;
 		smfi_setpriv(ctx, NULL);
 	}
@@ -1054,6 +1059,7 @@ sfsistat mlfi_header(SMFICTX *ctx, char *headerf, char *headerv)
 {
 	ASPFConnector *ASPF = (ASPFConnector*)smfi_getpriv(ctx);
 	ASPF->Header(headerf, headerv);
+	ASPF->Set("RESET","OK");
 
 	return ASPF->Handle("mlfi_header");	
 }
